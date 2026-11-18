@@ -7,7 +7,26 @@ $statePath=Join-Path $root 'backup.json'
 $codecId='{6215667c-74ca-4076-a769-3f834c3f25f5}'
 $progid='Codex.HEIC.PhotoViewer'
 $views=@('Registry64','Registry32')
-$transcript=$false
+function Clear-Logs {
+ try {
+  $basePath=[IO.Path]::GetFullPath($root)
+  $logs=Join-Path $basePath 'Logs'
+  foreach($dir in @($basePath,$logs)){
+   if(Test-Path -LiteralPath $dir){
+    $item=Get-Item -LiteralPath $dir -Force
+    if(-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw '日志目录不是普通文件夹，已跳过清理。'}
+   }
+  }
+  if(Test-Path -LiteralPath $logs){
+   foreach($file in @(Get-ChildItem -LiteralPath $logs -File -Force)){
+    if($file.Name -match '^(?:Install|Uninstall|Test|Open)-\d{8}-\d{6}-\d{3}\.txt$' -and ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and [IO.Path]::GetDirectoryName($file.FullName) -eq $logs){
+     Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+    }
+   }
+   if(@(Get-ChildItem -LiteralPath $logs -Force).Count -eq 0){[IO.Directory]::Delete($logs,$false)}
+  }
+ }catch{Write-Warning ('旧日志未全部清理：'+$_.Exception.Message)}
+}
 function Base($scope,$view){
  $hive=if($scope -eq 'LocalMachine'){[Microsoft.Win32.RegistryHive]::LocalMachine}else{[Microsoft.Win32.RegistryHive]::CurrentUser}
  return [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,[Microsoft.Win32.RegistryView]::$view)
@@ -44,6 +63,63 @@ function Set-Reg($scope,$change,$restore=$false){
  }finally{if($k){$k.Dispose()};$b.Dispose()}
 }
 function Save-State($s){$s | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $statePath -Encoding UTF8}
+function Get-OrphanState($scope){
+ $owned=[Collections.Generic.List[object]]::new()
+ foreach($view in $views){
+  $c='Software\Classes\CLSID\'+$codecId
+  $cat='Software\Classes\CLSID\{7ED96837-96F0-4812-B211-F13C24117ED3}\Instance\'+$codecId
+  $pg='Software\Classes\'+$progid
+  $anchor=$false
+  foreach($path in @($c,$cat,$pg)){
+   $b=Base $scope $view;$k=$null
+   try{
+    $k=$b.OpenSubKey($path)
+    if(-not $k){continue}
+    if($path -eq $c){
+     $arch=if($view -eq 'Registry64'){'x64'}else{'x86'}
+     $dll=Get-Old $scope $view ($c+'\InprocServer32') ''
+     $expected=Join-Path $root ('codec\'+$arch+'\wic_heic.dll')
+     if(-not $dll.Exists -or [string]$dll.Data -ine $expected -or $k.GetValue('Author') -ne 'prsyahmi@github'){throw "同名解码器不属于本安装目录，未覆盖：$scope/$view/$path"}
+     $anchor=$true
+    }elseif($path -eq $cat){
+     if([string]$k.GetValue('CLSID') -ine $codecId){throw '同名解码器类别注册不符合预期，未覆盖。'}
+    }else{
+     $command=Get-Old $scope $view ($pg+'\shell\open\command') ''
+     $viewer=Join-Path $env:ProgramFiles 'Windows Photo Viewer\PhotoViewer.dll'
+     $expected='"'+(Join-Path $env:SystemRoot 'System32\rundll32.exe')+'" "'+$viewer+'", ImageView_Fullscreen "%1"'
+     if(-not $command.Exists -or [string]$command.Data -ine $expected -or $k.GetValue('') -ne 'Windows 照片查看器（HEIC）'){throw '同名查看器入口不符合本工具特征，未覆盖。'}
+     $anchor=$true
+    }
+    $owned.Add(@{View=$view;Path=$path})
+   }finally{if($k){$k.Dispose()};$b.Dispose()}
+  }
+  if(@($owned | Where-Object View -eq $view).Count -gt 0 -and -not $anchor){throw '仅找到解码器类别残留，无法确认归属，未自动更改。'}
+ }
+ if($owned.Count -eq 0){return $null}
+ $changes=[Collections.Generic.List[object]]::new()
+ foreach($view in $views){foreach($ext in @('.heic','.heif')){
+  $path='Software\Classes\'+$ext+'\OpenWithProgids'
+  $value=Get-Old $scope $view $path $progid
+  if($value.Exists -and [string]$value.Data -eq ''){$changes.Add(@{View=$view;Path=$path;Name=$progid;Kind='String';Data='';Old=@{Exists=$false;Kind='String';Data=$null}})}
+ }}
+ return @{Schema=1;Version='1.1.16';Scope=$scope;Status='Prepared';Recovery=$true;Changes=@($changes.ToArray());OwnTrees=@($owned.ToArray());Created=(Get-Date -Format o)}
+}
+function Find-OrphanState($admin){
+ $candidates=@()
+ foreach($candidateScope in @('CurrentUser','LocalMachine')){
+  $candidate=Get-OrphanState $candidateScope
+  if($candidate){$candidates+=,$candidate}
+ }
+ if($candidates.Count -gt 1){throw '当前账户和整台电脑均有本工具残留，无法确定原安装范围，请先分别检查，未自动覆盖。'}
+ if($candidates.Count -eq 1){
+  if($candidates[0].Scope -eq 'LocalMachine' -and -not $admin){throw '发现原安装为管理员安装，请右键以管理员身份运行同一个入口恢复或撤销。'}
+  return $candidates[0]
+ }
+ return $null
+}
+function Show-RecoveryWarning{
+ Write-Warning '原始撤销备份已丢失；本次只能移除或重新接管确认属于本工具的注册。无法恢复未知的安装前共享设置。'
+}
 function Rollback($s){
  foreach($change in $s.Changes){Set-Reg $s.Scope $change $true}
  foreach($tree in $s.OwnTrees){
@@ -67,31 +143,42 @@ function Check-Image($path){
  $verify=Join-Path $root 'Verify.exe'
  if(-not(Test-Path -LiteralPath $verify)){throw '请先运行一键安装。'}
  $text=@(& $verify $path 2>&1);$code=$LASTEXITCODE;$text | ForEach-Object{Write-Host $_}
- if($code -ne 0){throw 'Windows 图片接口解码仍失败，请提供日志。'}
+ if($code -ne 0){throw 'Windows 图片接口解码仍失败，请先截取本窗口报错，再关闭窗口。'}
  if(($text -join "`n") -notmatch [regex]::Escape($codecId)){throw '当前程序未选中兼容解码器，请使用日常看图的账户安装，或注销再登录。'}
  Write-Host '原始 HEIC 的完整像素读取通过。' -ForegroundColor Green
 }
 try{
  if(-not[Environment]::Is64BitOperatingSystem -or -not[Environment]::Is64BitProcess -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64'){throw '本包适用于 Intel/AMD 64 位 Windows 10/11，请使用包内的 CMD 入口。'}
- New-Item -ItemType Directory -Path $root -Force | Out-Null
- $logDir=Join-Path $root 'Logs';New-Item -ItemType Directory -Path $logDir -Force | Out-Null
- $log=Join-Path $logDir ($Mode+'-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff')+'.txt')
- Start-Transcript -Path $log -Force | Out-Null;$transcript=$true
+ if($Mode -eq 'Install'){New-Item -ItemType Directory -Path $root -Force | Out-Null}
  Write-Host 'HEIC 系统兼容修复 v4 — WicHeic 1.1.16' -ForegroundColor Cyan
  Write-Host '原始 HEIC 文件不会转换或改写。显示为普通8位画面，不提供HDR显示。'
+ $id=[Security.Principal.WindowsIdentity]::GetCurrent();$admin=([Security.Principal.WindowsPrincipal]::new($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
  if($Mode -eq 'Uninstall'){
-  if(-not(Test-Path -LiteralPath $statePath)){throw '本账户没有本工具的安装备份，未更改注册信息。'}
-  $s=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
-  if($s.Status -eq 'RolledBack'){Write-Host '修复已经撤销。'}else{Rollback $s;Notify;Write-Host '已恢复安装前的注册信息。请关闭看图窗口并注销再登录，使已加载的组件退出。' -ForegroundColor Green}
-  Write-Host '已停止注册兼容解码器；保留本工具文件和日志以便检查，不会删除照片或微软扩展。'
+  if(Test-Path -LiteralPath $statePath){$s=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json}
+  else{
+   $s=Find-OrphanState $admin
+   if(-not $s){Write-Host '没有安装备份，也未发现可确认属于本工具的残留注册。';exit 0}
+   New-Item -ItemType Directory -Path $root -Force | Out-Null
+   Save-State $s
+  }
+  if($s.Recovery){Show-RecoveryWarning}
+  if($s.Status -eq 'RolledBack'){Write-Host '修复已经撤销。'}else{
+   Rollback $s;Notify
+   if($s.Recovery){Write-Host '已移除本工具的解码器及专用打开入口；无法确定原值的共享设置已保留。' -ForegroundColor Green}
+   else{Write-Host '已恢复安装前的注册信息。' -ForegroundColor Green}
+   Write-Host '请关闭看图窗口并注销再登录，使已加载的组件退出。'
+  }
+  Write-Host '已停止注册兼容解码器；保留组件文件及撤销备份，不会删除照片或微软扩展。'
  }elseif($Mode -eq 'Install'){
   $hashes=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hashes.json') -Raw -Encoding UTF8 | ConvertFrom-Json
   $sources=@(@{Source='codec\x64\wic_heic.dll';Hash=$hashes.x64},@{Source='codec\x86\wic_heic.dll';Hash=$hashes.x86},@{Source='Verify.exe';Hash=$hashes.'Verify.exe'},@{Source='自检样本.heic';Hash=$hashes.'自检样本.heic'})
   foreach($file in $sources){$src=Join-Path $PSScriptRoot $file.Source;if((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne $file.Hash){throw "文件校验失败：$($file.Source)"}}
-  $id=[Security.Principal.WindowsIdentity]::GetCurrent();$admin=([Security.Principal.WindowsPrincipal]::new($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
   $scope=if($admin){'LocalMachine'}else{'CurrentUser'}
   $s=$null
-  if(Test-Path -LiteralPath $statePath){$old=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json;if($old.Status -eq 'Installed'){$s=$old;$scope=$s.Scope}}
+  if(Test-Path -LiteralPath $statePath){$old=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json;if($old.Status -in @('Installed','Prepared')){$s=$old;$scope=$s.Scope}}
+  if(-not $s -and -not(Test-Path -LiteralPath $statePath)){$s=Find-OrphanState $admin;if($s){$scope=$s.Scope}}
+  if($s -and $s.Recovery){Show-RecoveryWarning;Write-Host '已识别本工具残留，将补回缺失文件并重新注册。'}
+  if($scope -eq 'LocalMachine' -and -not $admin){throw '原安装需要管理员权限，请右键以管理员身份运行。'}
   $plan=[Collections.Generic.List[object]]::new();$trees=[Collections.Generic.List[object]]::new()
   function Add($view,$path,$name,$kind,$data){$plan.Add(@{View=$view;Path=$path;Name=$name;Kind=$kind;Data=$data;Old=(Get-Old $scope $view $path $name)})}
   $viewer=Join-Path $env:ProgramFiles 'Windows Photo Viewer\PhotoViewer.dll'
@@ -148,6 +235,7 @@ try{
    $existing=@{};foreach($c in $s.Changes){$existing[($c.View+'|'+$c.Path+'|'+$c.Name)]=$true}
    $extra=@($plan | Where-Object {-not $existing.ContainsKey($_.View+'|'+$_.Path+'|'+$_.Name)})
    if($extra.Count){$s.Changes=@($s.Changes)+$extra}
+   $s.OwnTrees=@($trees.ToArray())
   }
   Save-State $s
   try{
@@ -175,6 +263,6 @@ try{
 }catch{
  $exitCode=1;Write-Host ('未完成：'+$_.Exception.Message) -ForegroundColor Red;Write-Host ($_ | Out-String)
 }finally{
- if($transcript){Stop-Transcript | Out-Null;Write-Host "日志：$log"}
+ Clear-Logs
 }
 exit $exitCode
