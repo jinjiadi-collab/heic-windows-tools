@@ -7,6 +7,7 @@ $statePath=Join-Path $root 'backup.json'
 $codecId='{6215667c-74ca-4076-a769-3f834c3f25f5}'
 $progid='Codex.HEIC.PhotoViewer'
 $views=@('Registry64','Registry32')
+. (Join-Path $PSScriptRoot 'Cleanup.ps1')
 function Clear-Logs {
  try {
   $basePath=[IO.Path]::GetFullPath($root)
@@ -157,18 +158,25 @@ try{
   if(Test-Path -LiteralPath $statePath){$s=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json}
   else{
    $s=Find-OrphanState $admin
-   if(-not $s){Write-Host '没有安装备份，也未发现可确认属于本工具的残留注册。';exit 0}
+   if(-not $s){$s=@{Schema=1;Scope='CurrentUser';Status='RolledBack';Changes=@();OwnTrees=@()};Write-Host '未发现本工具的残留注册，将清理遗留的安装文件。'}
    New-Item -ItemType Directory -Path $root -Force | Out-Null
    Save-State $s
   }
-  if($s.Recovery){Show-RecoveryWarning}
+  if($s.Recovery -and $s.Status -ne 'RolledBack'){Show-RecoveryWarning}
   if($s.Status -eq 'RolledBack'){Write-Host '修复已经撤销。'}else{
    Rollback $s;Notify
    if($s.Recovery){Write-Host '已移除本工具的解码器及专用打开入口；无法确定原值的共享设置已保留。' -ForegroundColor Green}
    else{Write-Host '已恢复安装前的注册信息。' -ForegroundColor Green}
-   Write-Host '请关闭看图窗口并注销再登录，使已加载的组件退出。'
   }
-  Write-Host '已停止注册兼容解码器；保留组件文件及撤销备份，不会删除照片或微软扩展。'
+  Release-HeicHolders
+  if(Start-PostExitCleanup){}
+  elseif(Remove-HeicRuntime){Write-Host '撤销完成，安装文件和安装目录已删除。' -ForegroundColor Green}
+  else{
+   $helper=Join-Path $root 'Cleanup.ps1'
+   if(-not(Test-Path -LiteralPath $helper)){[IO.File]::WriteAllText($helper,$cleanupScriptText,(New-Object Text.UTF8Encoding($true)))}
+   Set-PendingCleanup
+   Write-Warning '注册已撤销，部分安装文件暂未删除；已安排下次登录后再清理。目录中其他文件会保留。'
+  }
  }elseif($Mode -eq 'Install'){
   $hashes=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hashes.json') -Raw -Encoding UTF8 | ConvertFrom-Json
   $sources=@(@{Source='codec\x64\wic_heic.dll';Hash=$hashes.x64},@{Source='codec\x86\wic_heic.dll';Hash=$hashes.x86},@{Source='Verify.exe';Hash=$hashes.'Verify.exe'},@{Source='自检样本.heic';Hash=$hashes.'自检样本.heic'})
@@ -229,7 +237,7 @@ try{
    if(Test-Path -LiteralPath $dest){if((Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash -ne $file.Hash){throw "已有不同版本文件：$dest。请先撤销旧版并关闭看图程序。"}}
    else{Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file.Source) -Destination $dest}
   }
-  foreach($name in @('Manage.ps1','hashes.json','3-撤销修复.cmd')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $root $name) -Force}
+  foreach($name in @('Manage.ps1','Cleanup.ps1','hashes.json','3-撤销修复.cmd')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $root $name) -Force}
   if(-not $s){$s=@{Schema=1;Version='1.1.16';Scope=$scope;Status='Prepared';Changes=@($plan.ToArray());OwnTrees=@($trees.ToArray());Created=(Get-Date -Format o)}}
   else{
    $existing=@{};foreach($c in $s.Changes){$existing[($c.View+'|'+$c.Path+'|'+$c.Name)]=$true}
@@ -238,6 +246,7 @@ try{
    $s.OwnTrees=@($trees.ToArray())
   }
   Save-State $s
+  Remove-PendingCleanup
   try{
    foreach($change in $plan){Set-Reg $scope $change}
    Notify
