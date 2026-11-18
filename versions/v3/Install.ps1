@@ -16,9 +16,14 @@ try {
     $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
     if ([int]$cv.CurrentBuildNumber -lt 17763) { throw '请先更新至 Windows 10 1809 或以上版本。' }
     $records = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'inventory.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($records.Count -ne 2) { throw '安装包清单不完整。' }
+    if ($records.Count -ne 3) { throw '安装包清单不完整。' }
+    . (Join-Path $PSScriptRoot 'Select-Packages.ps1')
+    $windowsVersion = [version]('10.0.' + $cv.CurrentBuildNumber + '.' + $cv.UBR)
+    $records = @(Get-CompatibleExtensionPackages -Records $records -WindowsVersion $windowsVersion)
+    Write-Host "系统内部版本：$windowsVersion"
     foreach ($r in $records) {
-        if ($r.File -notin @('HEIF.appxbundle','HEVC.appxbundle')) { throw '安装文件名不符合预期。' }
+        if ($r.File -notin @('HEIF.appxbundle','HEVC.appxbundle','HEVC-2.5.48.appxbundle')) { throw '安装文件名不符合预期。' }
+        Write-Host "自动选择：$($r.Name) $($r.Version)"
         $path = Join-Path (Join-Path $PSScriptRoot 'Packages') $r.File
         if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $r.SHA256) { throw "安装包损坏：$($r.File)，请重新复制。" }
         $sig = Get-AuthenticodeSignature -LiteralPath $path

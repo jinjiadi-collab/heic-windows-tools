@@ -12,5 +12,12 @@
     "Version": "2.4.149.0",
     "MinVersion": "10.0.16299.0",
     "File": "HEVC.appxbundle"
+  },
+  {
+    "Name": "Microsoft.HEVCVideoExtension",
+    "SHA256": "275FB4C0AE406D51892E87281EFF0BB3B9456D9A9493813CC059EEB8A83D39BA",
+    "Version": "2.5.48.0",
+    "MinVersion": "10.0.26200.0",
+    "File": "HEVC-2.5.48.appxbundle"
   }
 ]
