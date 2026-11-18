@@ -1,0 +1,10 @@
+work/
+outputs/
+**/*.pdb
+**/*.obj
+**/*.exp
+**/*.lib
+**/Packages/*.appxbundle
+**/codec/**/*.dll
+**/Verify.exe
+**/source/*.zip

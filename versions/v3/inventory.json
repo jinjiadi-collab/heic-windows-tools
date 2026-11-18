@@ -1,0 +1,16 @@
+[
+  {
+    "Name": "Microsoft.HEIFImageExtension",
+    "SHA256": "B716F4AE5157D0EA48B8D1A91B13E4A939A32761FCB427E43D7AFE6EB1D18D02",
+    "Version": "1.2.65.0",
+    "MinVersion": "10.0.17763.0",
+    "File": "HEIF.appxbundle"
+  },
+  {
+    "Name": "Microsoft.HEVCVideoExtension",
+    "SHA256": "913A2D26885C742E9D9ABA99C02CD6CC88E96B6E778742D8304EB88AEA36F0A6",
+    "Version": "2.4.149.0",
+    "MinVersion": "10.0.16299.0",
+    "File": "HEVC.appxbundle"
+  }
+]

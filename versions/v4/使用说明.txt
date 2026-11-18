@@ -1,0 +1,30 @@
+﻿V4｜10位HEIC兼容修复版
+
+用途：针对安装微软扩展后仍打不开的部分图片，使用WicHeic 1.1.16替代解码器。
+原始HEIC文件不转换、不改写；显示为普通8位画面，不提供HDR显示。
+适用：Intel/AMD 64位Windows 10/11，未对所有系统及图片变体逐一实测。
+
+1. 全部解压，使用日常看照片的账户双击“1-一键安装修复.cmd”。
+2. 退出原来的看图窗口，重新右键原图→打开方式→照片。
+3. 也可以运行“2-用Windows照片查看器打开.cmd”尝试旧版查看器。
+4. 如需恢复，使用安装时同一账户运行“3-撤销修复.cmd”。
+“4-只检测原图.cmd”可检查Windows是否能够完整读取所选图片。
+
+普通运行安装到当前账户；管理员运行会写机器范围注册信息，撤销也需要相应权限。建议优先普通运行。
+不会卸载微软HEIF/HEVC扩展、不会更改默认看图程序、不会自动删除照片或结束资源管理器。
+会备份并修改所需解码器、图像类型、缩略图处理器及旧版查看器打开入口的注册信息。
+
+本机已验证Windows默认图片接口及WPF完整解码原始10位HEIC，“照片”可以打开；安装、撤销、重装流程已验证。
+旧版查看器已补回打开入口，但窗口显示效果尚未确认。
+原文件保留高位深和HDR数据；8位显示效果不保证与支持HDR、完整色彩管理的软件一致。
+
+实际组件和备份位置：%LOCALAPPDATA%\HEIC-WIC-Compatibility
+不要直接删除此目录中的codec文件；停用时先运行撤销。撤销后保留组件文件及日志以避免文件占用问题。
+下载和解压文件夹可在安装完成后删除；撤销入口同时保存在上述目录。
+
+来源：https://github.com/prsyahmi/wic_heic/releases/tag/v1.1.16
+项目：https://github.com/prsyahmi/wic_heic
+DLL来自官方发布包且未修改。许可证在licenses，源码资料在source。
+依赖完整源码和固定版本可从上游标签的子模块取得：
+git clone --recurse-submodules --branch v1.1.16 https://github.com/prsyahmi/wic_heic.git
+本工具说明：https://github.com/jinjiadi-collab/heic-windows-tools
